@@ -188,9 +188,11 @@ class PredNet(Recurrent):
 
         for l in range(self.nb_layers):
             for c in ['i', 'f', 'c', 'o']:
+                # 表示RNN的结构，除了c都是中间的隐藏层
                 act = self.LSTM_activation if c == 'c' else self.LSTM_inner_activation
                 self.conv_layers[c].append(Conv2D(self.R_stack_sizes[l], self.R_filt_sizes[l], padding='same', activation=act, data_format=self.data_format))
 
+            # A和A‘的激活函数，A'有n层，但是A只有n-1个，第0层没有
             act = 'relu' if l == 0 else self.A_activation
             self.conv_layers['ahat'].append(Conv2D(self.stack_sizes[l], self.Ahat_filt_sizes[l], padding='same', activation=act, data_format=self.data_format))
 
@@ -226,7 +228,7 @@ class PredNet(Recurrent):
             self.states += [None] * 2  # [previous frame prediction, timestep]
 
     def step(self, a, states):
-        r_tm1 = states[:self.nb_layers]
+        r_tm1 = states[:self.nb_layers]  # 读取输入的R、E、C（上时刻状态）
         c_tm1 = states[self.nb_layers:2*self.nb_layers]
         e_tm1 = states[2*self.nb_layers:3*self.nb_layers]
 
@@ -238,12 +240,13 @@ class PredNet(Recurrent):
         r = []
         e = []
 
-        # Update R units starting from the top
+        # Update R units starting from the top，从顶向下更新R单元，由于R的计算需要前时刻和高一层的R，因此需要由上向下进行计算
         for l in reversed(range(self.nb_layers)):
             inputs = [r_tm1[l], e_tm1[l]]
-            if l < self.nb_layers - 1:
+            if l < self.nb_layers - 1:  # 除了最高层，前面的输入都是R_t-1,R_l+1,E,以及隐含的状态C
                 inputs.append(r_up)
 
+            # LSTM过程
             inputs = K.concatenate(inputs, axis=self.channel_axis)
             i = self.conv_layers['i'][l].call(inputs)
             f = self.conv_layers['f'][l].call(inputs)
@@ -253,15 +256,16 @@ class PredNet(Recurrent):
             c.insert(0, _c)
             r.insert(0, _r)
 
-            if l > 0:
+            if l > 0: # 上采样
                 r_up = self.upsample.call(_r)
 
-        # Update feedforward path starting from the bottom
+        # Update feedforward path starting from the bottom，整个网络从底开始更新
         for l in range(self.nb_layers):
-            ahat = self.conv_layers['ahat'][l].call(r[l])
+            ahat = self.conv_layers['ahat'][l].call(r[l])  # A' 是R的卷积
             if l == 0:
-                ahat = K.minimum(ahat, self.pixel_max)
-                frame_prediction = ahat
+                ahat = K.minimum(ahat, self.pixel_max)  # 第一层，Ahat限幅，准备作为输出图像
+                frame_prediction = ahat    # 当output_mode == 'prediction'时输出
+
 
             # compute errors
             e_up = self.error_activation(ahat - a)
